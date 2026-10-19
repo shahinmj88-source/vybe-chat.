@@ -1,0 +1,210 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VYBE | Friends Chat</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#080b16;color:#f5f5ff;font-family:Arial,sans-serif}
+header{padding:20px;background:#11172a;border-bottom:1px solid #29304b}
+h1{margin:0;color:#a78bfa;letter-spacing:3px}
+small{color:#9ca3c7}
+main{max-width:900px;margin:20px auto;padding:12px}
+.card{background:#11172a;border:1px solid #29304b;border-radius:18px;padding:18px;margin-bottom:15px}
+input,button{padding:13px;border-radius:10px;font-size:15px}
+input{background:#090e1c;color:white;border:1px solid #343c59;width:100%;margin:5px 0}
+button{background:#8b5cf6;color:white;border:0;font-weight:bold;cursor:pointer;margin:4px 0}
+button:disabled{opacity:.5}
+#messages{height:45vh;min-height:250px;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding:10px 0}
+.msg{background:#202943;padding:12px;border-radius:12px;overflow-wrap:anywhere;max-width:85%;align-self:flex-start}
+.mine{background:#5943a5;align-self:flex-end}
+.name{font-size:12px;color:#b9c5ff;margin-bottom:6px}
+#composer{display:flex;gap:8px}
+#composer input{flex:1;min-width:0}
+#status{color:#a5b4fc;font-size:13px;margin-top:10px}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<header>
+<h1>✦ VYBE</h1>
+<small>Your crew. Your conversations. One place.</small>
+</header>
+<main>
+<section class="card" id="login">
+<h2>Join your crew</h2>
+<input id="name" placeholder="Your display name">
+<input id="email" type="email" placeholder="Email address">
+<input id="password" type="password" placeholder="Password (6+ characters)">
+<button id="signup">Create account</button>
+<button id="signin">Sign in</button>
+<p id="status">Connect Firebase to activate chat.</p>
+</section>
+
+<section class="card hidden" id="chat">
+<h2>Welcome, <span id="welcome"></span> 👋</h2>
+<button id="logout">Sign out</button>
+<hr>
+<label>Group room code</label>
+<input id="room" placeholder="e.g. friday-squad">
+<button id="join">Join group</button>
+<h3 id="roomTitle">Choose a room</h3>
+<div id="messages">
+<p>Join a room to start chatting with your friends.</p>
+</div>
+<form id="composer">
+<input id="message" maxlength="2000" placeholder="Write a message..." disabled>
+<button id="send" disabled>Send ➤</button>
+</form>
+<p><small>Messages are saved online. Only share your room code with people you trust.</small></p>
+</section>
+</main>
+
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script>
+const firebaseConfig = {
+apiKey: "AIzaSyB5WfQ3LverUQGjbaMf26_HAnecV6bZ1hw",
+authDomain: "vybe-chat-8e7b6.firebaseapp.com",
+projectId: "vybe-chat-8e7b6",
+storageBucket: "vybe-chat-8e7b6.firebasestorage.app",
+messagingSenderId: "712557743835",
+appId: "1:712557743835:web:7f07bbdf3d3b5eee9086fe",
+measurementId: "G-XTZYS3X19P"
+};
+
+let auth, db, user, roomCode, stopMessages;
+
+const $ = id => document.getElementById(id);
+const status = text => $("status").textContent = text;
+
+function startFirebase() {
+  try {
+    if (firebaseConfig.apiKey === "YOUR_API_KEY") {
+      status("Setup required: add your Firebase web configuration.");
+      return;
+    }
+    firebase.initializeApp(firebaseConfig);
+    auth = firebase.auth();
+    db = firebase.firestore();
+
+    auth.onAuthStateChanged(u => {
+      user = u;
+      $("login").classList.toggle("hidden", !!u);
+      $("chat").classList.toggle("hidden", !u);
+      if (u) {
+        $("welcome").textContent =
+          u.displayName || u.email.split("@")[0];
+        if (roomCode) joinRoom();
+      } else {
+        leaveRoom();
+      }
+    });
+  } catch (e) {
+    status(e.message);
+  }
+}
+
+$("signup").onclick = async () => {
+  if (!auth) return status("Configure Firebase first.");
+  const n = $("name").value.trim();
+  if (!n) return status("Enter your display name.");
+  try {
+    const result = await auth.createUserWithEmailAndPassword(
+      $("email").value.trim(), $("password").value
+    );
+    await result.user.updateProfile({displayName:n});
+  } catch(e) { status(e.message); }
+};
+
+$("signin").onclick = async () => {
+  if (!auth) return status("Configure Firebase first.");
+  try {
+    await auth.signInWithEmailAndPassword(
+      $("email").value.trim(), $("password").value
+    );
+  } catch(e) { status(e.message); }
+};
+
+function leaveRoom() {
+  if (stopMessages) stopMessages();
+  stopMessages = null;
+  roomCode = null;
+  $("messages").replaceChildren();
+  $("message").disabled = true;
+  $("send").disabled = true;
+}
+
+function joinRoom() {
+  if (!user || !db) return;
+  const code = $("room").value.trim().toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "-").slice(0,40);
+
+  if (code.length < 3) return alert("Room code must have 3+ characters.");
+
+  leaveRoom();
+  roomCode = code;
+  $("room").value = code;
+  $("roomTitle").textContent = "✦ " + code;
+  $("message").disabled = false;
+  $("send").disabled = false;
+  $("messages").textContent = "Loading messages...";
+
+  stopMessages = db.collection("rooms").doc(code)
+    .collection("messages").orderBy("createdAt")
+    .limitToLast(200).onSnapshot(snapshot => {
+      $("messages").replaceChildren();
+
+      snapshot.forEach(doc => {
+        const m = doc.data();
+        const bubble = document.createElement("div");
+        bubble.className = "msg" +
+          (m.uid === user.uid ? " mine" : "");
+
+        const author = document.createElement("div");
+        author.className = "name";
+        author.textContent = m.name || "Friend";
+
+        const body = document.createElement("div");
+        body.textContent = m.text;
+
+        bubble.append(author, body);
+        $("messages").appendChild(bubble);
+      });
+
+      $("messages").scrollTop = $("messages").scrollHeight;
+    }, e => alert("Chat error: " + e.message));
+}
+
+$("join").onclick = joinRoom;
+
+$("composer").onsubmit = async e => {
+  e.preventDefault();
+  const text = $("message").value.trim();
+  if (!text || !roomCode || !user) return;
+
+  $("send").disabled = true;
+  try {
+    await db.collection("rooms").doc(roomCode)
+      .collection("messages").add({
+        text,
+        uid: user.uid,
+        name: user.displayName || user.email.split("@")[0],
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    $("message").value = "";
+  } catch(e) {
+    alert("Message not sent: " + e.message);
+  } finally {
+    $("send").disabled = false;
+  }
+};
+
+$("logout").onclick = () => auth.signOut();
+startFirebase();
+</script>
+</body>
+</html>
